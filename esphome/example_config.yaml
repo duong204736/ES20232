@@ -1,0 +1,245 @@
+###       PIN MAPPING
+# tm1637.clk    0
+# tm137.dio     1
+# rc522.cs      15
+# rc522.clk     14
+# rc522.mosi    13
+# rc522.miso    12
+# coil_en       5
+# outside_touch 4
+# dc_detect     16
+# ws2812        2
+
+
+
+substitutions:
+  name: bedrom-door
+  upper_name: Bedroom Door
+
+esphome:
+  name: $name
+  on_boot:
+    priority: -100
+    then:
+      - if:
+          condition:
+            - lambda: |-
+                return id(lock_is_locked);
+          then:
+            - lock.lock: bedroom_lock
+          else:
+            - lock.unlock: bedroom_lock
+esp8266:
+  board: esp12e
+  restore_from_flash: true
+ota:
+  password: change_this
+api:
+  
+wifi:
+  ssid: your_ssid
+  password: your_wifi_pwd
+  # reboot_timeout: 0s
+logger:
+  baud_rate: 0
+preferences:
+  flash_write_interval: 30s
+api:
+  reboot_timeout: 0s
+  services:
+    - service: toggle_lock
+      then:
+      - script.execute: toggle_lock
+time:
+  - platform: sntp
+    id: time_source
+
+globals:
+  - id: lock_is_locked
+    type: bool
+    initial_value: 'true'
+    restore_value: true
+script:
+  - id: toggle_lock
+    mode: restart      
+    then:
+      - if:
+          condition:
+            - lambda: |-
+                return id(lock_is_locked);
+          then:
+            - lock.unlock: bedroom_lock
+          else:
+            - lock.lock: bedroom_lock
+  - id: lock_state_light
+    mode: restart
+    then:
+      - if:
+          condition: 
+            - lambda: |-
+                return id(lock_is_locked);
+          then:
+            - lock.lock: bedroom_lock
+            - light.turn_on:
+                id: indicator
+                effect: None
+                red: 1
+                green: 1
+                blue: 0
+                brightness: 0.3
+          else:
+            - lock.unlock: bedroom_lock
+            - light.turn_on:
+                id: indicator
+                effect: None
+                red: 0
+                green: 1
+                blue: 1
+                brightness: 0.3
+  - id: active_coil
+    mode: restart
+    then:
+      - switch.turn_on: lock_coil
+      - delay: 3s
+      - switch.turn_off: lock_coil
+  - id: access_denied
+    mode: restart
+    then:
+      - light.turn_on:
+          id: indicator
+          effect: Pulse
+          red: 1
+          green: 0
+          blue: 0
+          brightness: 0.3
+      - delay: 1.5s
+      - script.execute: lock_state_light
+
+light:
+  - platform: neopixelbus
+    restore_mode: ALWAYS_OFF
+    type: GRB
+    variant: WS2812X
+    pin: 2
+    num_leds: 1
+    id: indicator
+    effects:
+      - pulse:
+          transition_length: 0.25s
+          update_interval: 0.25s
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 1s
+          update_interval: 1s
+      
+spi:
+  clk_pin: GPIO14
+  miso_pin: GPIO12
+  mosi_pin: GPIO13
+rc522_spi:
+  cs_pin: GPIO15
+
+binary_sensor:
+  - platform: rc522
+    uid: 1C-27-B3-38
+    name: "RC522 RFID Tag"
+    on_press:
+      - if:
+          condition:
+            - lock.is_locked: bedroom_lock
+          then:
+            - lock.unlock: bedroom_lock
+          else:
+            - lock.lock: bedroom_lock
+  - platform: rc522
+    uid: AA-1C-19-3F
+    name: "Blue key"
+    on_press:
+      - if:
+          condition:
+            - lock.is_locked: bedroom_lock
+          then:
+            - lock.unlock: bedroom_lock
+          else:
+            - lock.lock: bedroom_lock
+  - platform: gpio
+    pin:
+      number: 4
+      inverted: True
+      mode: 
+        pullup: True
+        input: True
+    id: fully_closed
+    name: $upper_name
+    device_class: door
+    filters:
+      - delayed_on_off: 10ms
+    on_press:
+      - if:
+          condition:
+            - lambda: |-
+                return id(lock_is_locked);
+          then:
+            - script.execute: access_denied
+          else:
+            - script.execute: active_coil
+  - platform: gpio
+    pin: 3
+    id: touch
+    filters: 
+      - delayed_on_off: 50ms
+    on_press:
+      - if:
+          condition:
+            - lambda: |-
+                return id(lock_is_locked);
+          then:
+            - script.execute: access_denied
+          else:
+            - script.execute: active_coil
+          
+  - platform: gpio
+    pin: 
+      number: 16
+      inverted: True
+    id: dc_in_detect
+    name: $upper_name DC power dc_detect
+    internal: True
+
+
+lock: 
+  - platform: template
+    name: $upper_name Lock
+    optimistic: true
+    id: bedroom_lock
+    on_lock:
+      - globals.set:
+          id: lock_is_locked
+          value: 'true'
+      - script.execute: lock_state_light
+    on_unlock:
+      - globals.set:
+          id: lock_is_locked
+          value: 'false'
+      - script.execute: lock_state_light
+
+switch:
+  - platform: gpio
+    pin: 5
+    name: Lock Coil
+    internal: true
+    id: lock_coil
+    restore_mode: ALWAYS_OFF
+
+display:
+  - platform: tm1637
+    clk_pin: 0
+    dio_pin: 1
+    update_interval: 1s
+    lambda: |-
+      static int i = 0;
+      i++;
+      if ((i % 2) == 0)
+        it.strftime("%H.%M", id(time_source).now());
+      else
+        it.strftime("%H%M", id(time_source).now());
